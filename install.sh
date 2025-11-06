@@ -108,6 +108,104 @@ get_server_ip() {
     fi
 }
 
+# Check if a port is in use
+is_port_in_use() {
+    local port=$1
+    local protocol=$2  # tcp or udp
+
+    if [[ "$protocol" == "tcp" ]]; then
+        # Check TCP port
+        if ss -tlnH | grep -q ":${port} " || netstat -tln 2>/dev/null | grep -q ":${port} "; then
+            return 0  # Port is in use
+        fi
+    elif [[ "$protocol" == "udp" ]]; then
+        # Check UDP port
+        if ss -ulnH | grep -q ":${port} " || netstat -uln 2>/dev/null | grep -q ":${port} "; then
+            return 0  # Port is in use
+        fi
+    fi
+
+    return 1  # Port is free
+}
+
+# Find next available port
+find_available_port() {
+    local start_port=$1
+    local protocol=$2
+    local max_attempts=100
+    local port=$start_port
+
+    for ((i=0; i<$max_attempts; i++)); do
+        if ! is_port_in_use $port $protocol; then
+            echo $port
+            return 0
+        fi
+        ((port++))
+    done
+
+    print_error "Could not find available port after checking $max_attempts ports starting from $start_port"
+    exit 1
+}
+
+# Check and resolve port conflicts
+check_port_conflicts() {
+    print_info "Checking for port conflicts..."
+
+    # Default ports
+    WG_PORT=51820
+    WG_UI_PORT=51821
+
+    # Check if .env exists and has custom ports
+    if [[ -f .env ]]; then
+        if grep -q "^WG_PORT=" .env; then
+            WG_PORT=$(grep "^WG_PORT=" .env | cut -d'=' -f2)
+        fi
+        if grep -q "^WG_UI_PORT=" .env; then
+            WG_UI_PORT=$(grep "^WG_UI_PORT=" .env | cut -d'=' -f2)
+        fi
+    fi
+
+    local original_wg_port=$WG_PORT
+    local original_ui_port=$WG_UI_PORT
+    local port_changed=false
+
+    # Check WireGuard UDP port
+    if is_port_in_use $WG_PORT udp; then
+        print_warn "Port $WG_PORT/udp is already in use"
+        WG_PORT=$(find_available_port $((WG_PORT + 1)) udp)
+        print_info "Using alternative WireGuard port: $WG_PORT/udp"
+        port_changed=true
+    else
+        print_info "WireGuard port $WG_PORT/udp is available"
+    fi
+
+    # Check Web UI TCP port
+    if is_port_in_use $WG_UI_PORT tcp; then
+        print_warn "Port $WG_UI_PORT/tcp is already in use"
+        WG_UI_PORT=$(find_available_port $((WG_UI_PORT + 1)) tcp)
+        print_info "Using alternative Web UI port: $WG_UI_PORT/tcp"
+        port_changed=true
+    else
+        print_info "Web UI port $WG_UI_PORT/tcp is available"
+    fi
+
+    # Export variables for use in other functions
+    export WG_PORT
+    export WG_UI_PORT
+
+    if [[ "$port_changed" == true ]]; then
+        echo ""
+        print_warn "Port conflicts detected and resolved:"
+        if [[ $original_wg_port -ne $WG_PORT ]]; then
+            echo "  - WireGuard: $original_wg_port → $WG_PORT (UDP)"
+        fi
+        if [[ $original_ui_port -ne $WG_UI_PORT ]]; then
+            echo "  - Web UI: $original_ui_port → $WG_UI_PORT (TCP)"
+        fi
+        echo ""
+    fi
+}
+
 # Generate secure password
 generate_password() {
     if [[ -f .env ]] && grep -q "PASSWORD=" .env; then
@@ -123,16 +221,33 @@ generate_password() {
 create_env_file() {
     print_info "Creating .env configuration file..."
 
+    # Build port configuration lines
+    local wg_port_line=""
+    local ui_port_line=""
+
+    # If ports are not defaults, set them explicitly in .env
+    if [[ ${WG_PORT:-51820} -ne 51820 ]]; then
+        wg_port_line="WG_PORT=${WG_PORT}"
+    else
+        wg_port_line="# WG_PORT=51820"
+    fi
+
+    if [[ ${WG_UI_PORT:-51821} -ne 51821 ]]; then
+        ui_port_line="WG_UI_PORT=${WG_UI_PORT}"
+    else
+        ui_port_line="# WG_UI_PORT=51821"
+    fi
+
     cat > .env <<EOF
 # WireGuard Configuration
 WG_HOST=${SERVER_IP}
 PASSWORD=${PASSWORD}
 
-# Optional: Change default port if needed (default: 51820)
-# WG_PORT=51820
+# WireGuard VPN port (UDP) - Change if needed (default: 51820)
+${wg_port_line}
 
-# Optional: Change web UI port (default: 51821)
-# WG_UI_PORT=51821
+# Web UI port (TCP) - Change if needed (default: 51821)
+${ui_port_line}
 
 # Optional: Default DNS servers (default: 1.1.1.1, 1.0.0.1)
 # WG_DEFAULT_DNS=1.1.1.1, 1.0.0.1
@@ -295,6 +410,7 @@ main() {
     detect_os
     install_docker
     get_server_ip
+    check_port_conflicts
     generate_password
     create_env_file
     create_docker_compose
