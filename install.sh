@@ -233,56 +233,132 @@ configure_firewall() {
     fi
 }
 
-# Check for port conflicts
+# Check for port conflicts and clean up existing installations
 check_port_conflicts() {
-    print_info "Checking for port conflicts..."
+    print_info "Checking for port conflicts and existing installations..."
+    echo ""
 
     WG_PORT=${WG_PORT:-51820}
     WG_UI_PORT=${WG_UI_PORT:-51821}
+    local has_conflicts=false
+    local needs_cleanup=false
+
+    # Check for existing Docker containers
+    if docker ps -a --filter "name=wg-easy" --format "{{.ID}}" &> /dev/null | grep -q .; then
+        print_warn "Found existing wg-easy container(s)"
+        docker ps -a --filter "name=wg-easy" --format "  - {{.Names}} ({{.Status}})"
+        needs_cleanup=true
+        has_conflicts=true
+    fi
+
+    # Check for native WireGuard services
+    if systemctl is-active --quiet wg-quick@* 2>/dev/null; then
+        print_warn "Found active WireGuard service(s)"
+        systemctl list-units --type=service --state=running 'wg-quick@*' --no-legend 2>/dev/null | awk '{print "  - " $1}'
+        needs_cleanup=true
+        has_conflicts=true
+    fi
+
+    # Check for WireGuard interfaces
+    local wg_interfaces=$(ip link show 2>/dev/null | grep -o 'wg[0-9]*:' | tr -d ':' || echo "")
+    if [[ -n "$wg_interfaces" ]]; then
+        print_warn "Found active WireGuard interface(s)"
+        echo "$wg_interfaces" | while read iface; do
+            echo "  - $iface"
+        done
+        needs_cleanup=true
+        has_conflicts=true
+    fi
 
     # Check if ports are in use
-    if lsof -i :${WG_PORT} &> /dev/null || ss -tulpn 2>/dev/null | grep -q ":${WG_PORT}"; then
-        print_error "Port ${WG_PORT} is already in use!"
-        echo ""
-        print_warn "This could be caused by:"
-        echo "  1. Another WireGuard instance running"
-        echo "  2. Previous wg-easy container still running"
-        echo "  3. Native WireGuard service running"
-        echo ""
-        print_info "To fix this issue, run:"
-        echo "  sudo bash fix-port-conflict.sh"
-        echo ""
-        read -p "Do you want to continue anyway? This might fail. (y/N): " continue_confirm
-        if [[ $continue_confirm != "y" && $continue_confirm != "Y" ]]; then
-            exit 1
-        fi
+    if lsof -i :${WG_PORT} &> /dev/null || ss -tulpn 2>/dev/null | grep -q ":${WG_PORT} "; then
+        print_warn "Port ${WG_PORT}/udp is currently in use"
+        has_conflicts=true
     fi
 
-    if lsof -i :${WG_UI_PORT} &> /dev/null || ss -tulpn 2>/dev/null | grep -q ":${WG_UI_PORT}"; then
-        print_warn "Port ${WG_UI_PORT} is already in use!"
-        read -p "Continue anyway? (y/N): " continue_confirm
-        if [[ $continue_confirm != "y" && $continue_confirm != "Y" ]]; then
-            exit 1
-        fi
+    if lsof -i :${WG_UI_PORT} &> /dev/null || ss -tulpn 2>/dev/null | grep -q ":${WG_UI_PORT} "; then
+        print_warn "Port ${WG_UI_PORT}/tcp is currently in use"
+        has_conflicts=true
     fi
 
-    print_info "Port check completed"
+    # If conflicts detected, offer to clean up
+    if [[ "$has_conflicts" == "true" ]]; then
+        echo ""
+        print_error "Conflicts detected that may prevent installation!"
+        echo ""
+
+        if [[ "$needs_cleanup" == "true" ]]; then
+            print_info "The installer can automatically clean up existing WireGuard installations."
+            read -p "Do you want to automatically clean up? (Y/n): " cleanup_confirm
+
+            if [[ $cleanup_confirm != "n" && $cleanup_confirm != "N" ]]; then
+                cleanup_existing_wireguard
+            else
+                echo ""
+                print_warn "Installation may fail due to conflicts."
+                print_info "You can manually fix conflicts using: sudo bash fix-port-conflict.sh"
+                echo ""
+                read -p "Continue anyway? (y/N): " continue_confirm
+                if [[ $continue_confirm != "y" && $continue_confirm != "Y" ]]; then
+                    print_info "Installation cancelled. Run 'sudo bash fix-port-conflict.sh' to fix conflicts."
+                    exit 1
+                fi
+            fi
+        else
+            echo ""
+            print_info "To fix this issue, run: sudo bash fix-port-conflict.sh"
+            read -p "Continue anyway? This might fail. (y/N): " continue_confirm
+            if [[ $continue_confirm != "y" && $continue_confirm != "Y" ]]; then
+                exit 1
+            fi
+        fi
+    else
+        print_info "No port conflicts detected - ready to install!"
+    fi
+    echo ""
 }
 
-# Stop any existing containers
-stop_existing_containers() {
-    print_info "Checking for existing wg-easy containers..."
+# Clean up existing WireGuard installations
+cleanup_existing_wireguard() {
+    print_info "Cleaning up existing WireGuard installations..."
+    echo ""
 
-    if docker ps -a | grep -q wg-easy; then
-        print_warn "Found existing wg-easy container"
-        read -p "Stop and remove it? (Y/n): " remove_confirm
-        if [[ $remove_confirm != "n" && $remove_confirm != "N" ]]; then
-            print_info "Stopping and removing existing container..."
-            docker stop wg-easy 2>/dev/null || true
-            docker rm wg-easy 2>/dev/null || true
-            print_info "Container removed"
+    # Stop and remove existing containers
+    if docker ps -a --filter "name=wg-easy" --format "{{.ID}}" 2>/dev/null | grep -q .; then
+        print_info "Stopping and removing wg-easy containers..."
+        docker stop wg-easy 2>/dev/null || true
+        docker rm wg-easy 2>/dev/null || true
+        sleep 2
+    fi
+
+    # Stop native WireGuard services
+    if systemctl is-active --quiet wg-quick@* 2>/dev/null; then
+        print_info "Stopping WireGuard system services..."
+        systemctl stop wg-quick@* 2>/dev/null || true
+
+        read -p "Disable WireGuard services from starting on boot? (Y/n): " disable_confirm
+        if [[ $disable_confirm != "n" && $disable_confirm != "N" ]]; then
+            systemctl disable wg-quick@* 2>/dev/null || true
+            print_info "WireGuard services disabled"
         fi
     fi
+
+    # Remove WireGuard interfaces
+    local wg_interfaces=$(wg show interfaces 2>/dev/null || echo "")
+    if [[ -n "$wg_interfaces" ]]; then
+        print_info "Removing WireGuard network interfaces..."
+        for iface in $wg_interfaces; do
+            ip link set $iface down 2>/dev/null || true
+            ip link delete $iface 2>/dev/null || true
+        done
+    fi
+
+    # Wait a moment for ports to be released
+    print_info "Waiting for ports to be released..."
+    sleep 3
+
+    print_info "Cleanup completed successfully!"
+    echo ""
 }
 
 # Start WireGuard with wg-easy
@@ -350,14 +426,13 @@ main() {
 
     detect_os
     install_docker
+    check_port_conflicts
     get_server_ip
     generate_password
     create_env_file
     create_docker_compose
     enable_ip_forward
     configure_firewall
-    check_port_conflicts
-    stop_existing_containers
     start_wireguard
     print_access_info
 }

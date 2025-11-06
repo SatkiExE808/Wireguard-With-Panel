@@ -5,6 +5,8 @@ A simple, automated installer for WireGuard VPN with wg-easy web management pane
 ## Features
 
 - **Automated Installation**: Single command to install everything
+- **Smart Conflict Detection**: Automatically detects and resolves port conflicts
+- **Automatic Cleanup**: Removes existing WireGuard installations before setup
 - **Web-Based Management**: Easy-to-use web interface for managing VPN clients
 - **Docker-Based**: Runs in containers for easy deployment and updates
 - **Cross-Platform Support**: Works on Ubuntu, Debian, CentOS, Fedora, and RHEL
@@ -48,12 +50,14 @@ sudo bash install.sh
 The script will:
 1. Detect your operating system
 2. Install Docker and Docker Compose if not present
-3. Detect your server's public IP
-4. Generate a secure password for the web UI
-5. Configure system settings (IP forwarding, etc.)
-6. Configure firewall rules
-7. Start WireGuard with wg-easy panel
-8. Display access information
+3. **Check for port conflicts and existing WireGuard installations**
+4. **Automatically clean up conflicts if found** (with your confirmation)
+5. Detect your server's public IP
+6. Generate a secure password for the web UI
+7. Configure system settings (IP forwarding, etc.)
+8. Configure firewall rules
+9. Start WireGuard with wg-easy panel
+10. Display access information
 
 ### Access Your VPN Panel
 
@@ -72,6 +76,23 @@ WireGuard UDP Port: 51820
 ```
 
 Open the URL in your browser and use the provided password to access the management panel.
+
+### Automatic Conflict Detection & Resolution
+
+The installer automatically checks for:
+- Existing wg-easy Docker containers
+- Native WireGuard system services
+- Active WireGuard network interfaces
+- Port 51820 and 51821 availability
+
+**If conflicts are detected**, the installer will:
+1. Show you what's conflicting
+2. Offer to automatically clean up the conflicts
+3. Wait for your confirmation before making changes
+4. Safely remove old installations
+5. Proceed with fresh installation
+
+This ensures you never run into port binding errors during installation!
 
 ## Manual Installation
 
