@@ -441,7 +441,11 @@ start_wireguard() {
         print_info "WireGuard with wg-easy is running!"
     else
         print_error "Failed to start wg-easy container"
+        echo ""
+        print_info "Showing container logs:"
         docker compose logs
+        echo ""
+        print_error "If you see a port binding error, run: sudo bash fix-port-conflict.sh"
         exit 1
     fi
 }

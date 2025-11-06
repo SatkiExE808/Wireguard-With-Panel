@@ -272,23 +272,61 @@ docker run -d \
 
 3. Verify `WG_HOST` in `.env` matches your public IP
 
-### Port Already in Use
+### Port Already in Use (Port Binding Error)
 
-The installation script automatically detects port conflicts and finds available alternatives. If you see a message like:
-
+If you see an error like:
 ```
-Port conflicts detected and resolved:
-  - WireGuard: 51820 → 51822 (UDP)
-  - Web UI: 51821 → 51823 (TCP)
+Error response from daemon: failed to set up container networking:
+driver failed programming external connectivity: failed to bind host
+port for 0.0.0.0:51820: address already in use
 ```
 
-The script has automatically configured alternative ports in your `.env` file. Make sure to open these new ports in your firewall.
+This means port 51820 is already in use. **Use the automated fix script**:
 
-To manually change ports after installation, edit `.env`:
+```bash
+sudo bash fix-port-conflict.sh
+```
 
+The script will:
+1. Identify what's using port 51820
+2. Stop any existing wg-easy containers
+3. Stop native WireGuard services if running
+4. Offer to either clear the conflict or use a different port
+5. Restart wg-easy
+
+#### Manual Resolution (Alternative)
+
+If you prefer to fix manually:
+
+**Option 1: Stop conflicting services**
+```bash
+# Stop existing containers
+docker stop wg-easy
+docker rm wg-easy
+
+# Stop native WireGuard services
+sudo systemctl stop wg-quick@*
+sudo systemctl disable wg-quick@*
+
+# Remove WireGuard interfaces
+sudo wg show interfaces | xargs -I {} sudo ip link delete {}
+
+# Restart wg-easy
+docker compose up -d
+```
+
+**Option 2: Use different ports**
+
+Edit `.env` file:
 ```bash
 WG_PORT=51822
 WG_UI_PORT=51823
+```
+
+Update firewall:
+```bash
+sudo ufw allow 51822/udp  # New WireGuard port
+sudo ufw allow 51823/tcp  # New Web UI port
 ```
 
 Then restart:
@@ -339,6 +377,7 @@ sudo yum remove docker-ce docker-ce-cli containerd.io       # CentOS/RHEL
 ```
 Wireguard-With-Panel/
 ├── install.sh              # Automated installation script
+├── fix-port-conflict.sh    # Port conflict resolution script
 ├── docker-compose.yml      # Docker Compose configuration
 ├── .env.example           # Example environment variables
 ├── .env                   # Your configuration (created during install)
