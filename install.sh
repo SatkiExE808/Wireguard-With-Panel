@@ -113,15 +113,61 @@ is_port_in_use() {
     local port=$1
     local protocol=$2  # tcp or udp
 
-    if [[ "$protocol" == "tcp" ]]; then
-        # Check TCP port
-        if ss -tlnH | grep -q ":${port} " || netstat -tln 2>/dev/null | grep -q ":${port} "; then
+    # Method 1: Check with ss command (modern)
+    if command -v ss &> /dev/null; then
+        if [[ "$protocol" == "tcp" ]]; then
+            if ss -tlnH 2>/dev/null | grep -qE "(:${port}\s|:${port}$|\.${port}\s|\.${port}$)"; then
+                return 0  # Port is in use
+            fi
+        elif [[ "$protocol" == "udp" ]]; then
+            if ss -ulnH 2>/dev/null | grep -qE "(:${port}\s|:${port}$|\.${port}\s|\.${port}$)"; then
+                return 0  # Port is in use
+            fi
+        fi
+    fi
+
+    # Method 2: Check with netstat (fallback)
+    if command -v netstat &> /dev/null; then
+        if [[ "$protocol" == "tcp" ]]; then
+            if netstat -tln 2>/dev/null | grep -qE "(:${port}\s|:${port}$|\.${port}\s|\.${port}$)"; then
+                return 0  # Port is in use
+            fi
+        elif [[ "$protocol" == "udp" ]]; then
+            if netstat -uln 2>/dev/null | grep -qE "(:${port}\s|:${port}$|\.${port}\s|\.${port}$)"; then
+                return 0  # Port is in use
+            fi
+        fi
+    fi
+
+    # Method 3: Check with lsof
+    if command -v lsof &> /dev/null; then
+        if lsof -i${protocol}:${port} -sTCP:LISTEN 2>/dev/null | grep -q ":${port}"; then
             return 0  # Port is in use
         fi
-    elif [[ "$protocol" == "udp" ]]; then
-        # Check UDP port
-        if ss -ulnH | grep -q ":${port} " || netstat -uln 2>/dev/null | grep -q ":${port} "; then
+        if lsof -i${protocol}:${port} 2>/dev/null | grep -q ":${port}"; then
             return 0  # Port is in use
+        fi
+    fi
+
+    # Method 4: Check Docker containers (if Docker is available)
+    if command -v docker &> /dev/null; then
+        if docker ps --format "{{.Ports}}" 2>/dev/null | grep -qE "(0\.0\.0\.0:|:::)${port}-"; then
+            return 0  # Port is in use by Docker
+        fi
+    fi
+
+    # Method 5: Try to bind to the port as ultimate check
+    if command -v timeout &> /dev/null; then
+        if [[ "$protocol" == "tcp" ]]; then
+            if timeout 1 bash -c "echo '' > /dev/tcp/127.0.0.1/${port}" 2>/dev/null; then
+                return 0  # Port is listening
+            fi
+        elif [[ "$protocol" == "udp" ]]; then
+            if timeout 1 bash -c "echo '' > /dev/udp/127.0.0.1/${port}" 2>/dev/null; then
+                # UDP doesn't reliably indicate if port is in use this way
+                # So we rely on other methods
+                true
+            fi
         fi
     fi
 
@@ -273,8 +319,6 @@ create_docker_compose() {
     print_info "Creating docker-compose.yml..."
 
     cat > docker-compose.yml <<'EOF'
-version: "3.8"
-
 services:
   wg-easy:
     image: ghcr.io/wg-easy/wg-easy:latest
@@ -348,9 +392,45 @@ configure_firewall() {
     fi
 }
 
+# Clean up existing WireGuard containers
+cleanup_existing_containers() {
+    print_info "Checking for existing WireGuard containers..."
+
+    # Check if wg-easy container exists (running or stopped)
+    if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^wg-easy$"; then
+        print_warn "Found existing wg-easy container, removing it..."
+        docker stop wg-easy 2>/dev/null || true
+        docker rm wg-easy 2>/dev/null || true
+        print_info "Removed existing wg-easy container"
+
+        # Give Docker time to release the ports
+        sleep 2
+    fi
+
+    # Also try to stop via docker-compose in case it's running
+    if docker compose ps 2>/dev/null | grep -q wg-easy; then
+        print_warn "Stopping existing docker-compose services..."
+        docker compose down 2>/dev/null || true
+        sleep 2
+    fi
+}
+
 # Start WireGuard with wg-easy
 start_wireguard() {
     print_info "Starting WireGuard with wg-easy panel..."
+
+    # Final port check right before starting
+    print_info "Performing final port availability check..."
+    if is_port_in_use ${WG_PORT} udp; then
+        print_error "Port ${WG_PORT}/udp is still in use. Cannot start WireGuard."
+        print_error "Please check what's using the port with: sudo ss -ulnp | grep ${WG_PORT}"
+        exit 1
+    fi
+    if is_port_in_use ${WG_UI_PORT} tcp; then
+        print_error "Port ${WG_UI_PORT}/tcp is still in use. Cannot start Web UI."
+        print_error "Please check what's using the port with: sudo ss -tlnp | grep ${WG_UI_PORT}"
+        exit 1
+    fi
 
     docker compose up -d
 
@@ -416,6 +496,7 @@ main() {
     create_docker_compose
     enable_ip_forward
     configure_firewall
+    cleanup_existing_containers
     start_wireguard
     print_access_info
 }
