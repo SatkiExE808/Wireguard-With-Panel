@@ -348,6 +348,58 @@ configure_firewall() {
     fi
 }
 
+# Check for port conflicts
+check_port_conflicts() {
+    print_info "Checking for port conflicts..."
+
+    WG_PORT=${WG_PORT:-51820}
+    WG_UI_PORT=${WG_UI_PORT:-51821}
+
+    # Check if ports are in use
+    if lsof -i :${WG_PORT} &> /dev/null || ss -tulpn 2>/dev/null | grep -q ":${WG_PORT}"; then
+        print_error "Port ${WG_PORT} is already in use!"
+        echo ""
+        print_warn "This could be caused by:"
+        echo "  1. Another WireGuard instance running"
+        echo "  2. Previous wg-easy container still running"
+        echo "  3. Native WireGuard service running"
+        echo ""
+        print_info "To fix this issue, run:"
+        echo "  sudo bash fix-port-conflict.sh"
+        echo ""
+        read -p "Do you want to continue anyway? This might fail. (y/N): " continue_confirm
+        if [[ $continue_confirm != "y" && $continue_confirm != "Y" ]]; then
+            exit 1
+        fi
+    fi
+
+    if lsof -i :${WG_UI_PORT} &> /dev/null || ss -tulpn 2>/dev/null | grep -q ":${WG_UI_PORT}"; then
+        print_warn "Port ${WG_UI_PORT} is already in use!"
+        read -p "Continue anyway? (y/N): " continue_confirm
+        if [[ $continue_confirm != "y" && $continue_confirm != "Y" ]]; then
+            exit 1
+        fi
+    fi
+
+    print_info "Port check completed"
+}
+
+# Stop any existing containers
+stop_existing_containers() {
+    print_info "Checking for existing wg-easy containers..."
+
+    if docker ps -a | grep -q wg-easy; then
+        print_warn "Found existing wg-easy container"
+        read -p "Stop and remove it? (Y/n): " remove_confirm
+        if [[ $remove_confirm != "n" && $remove_confirm != "N" ]]; then
+            print_info "Stopping and removing existing container..."
+            docker stop wg-easy 2>/dev/null || true
+            docker rm wg-easy 2>/dev/null || true
+            print_info "Container removed"
+        fi
+    fi
+}
+
 # Start WireGuard with wg-easy
 start_wireguard() {
     print_info "Starting WireGuard with wg-easy panel..."
@@ -361,7 +413,11 @@ start_wireguard() {
         print_info "WireGuard with wg-easy is running!"
     else
         print_error "Failed to start wg-easy container"
+        echo ""
+        print_info "Showing container logs:"
         docker compose logs
+        echo ""
+        print_error "If you see a port binding error, run: sudo bash fix-port-conflict.sh"
         exit 1
     fi
 }
@@ -416,6 +472,8 @@ main() {
     create_docker_compose
     enable_ip_forward
     configure_firewall
+    check_port_conflicts
+    stop_existing_containers
     start_wireguard
     print_access_info
 }
