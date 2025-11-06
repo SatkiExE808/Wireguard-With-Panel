@@ -9,6 +9,7 @@ A simple, automated installer for WireGuard VPN with wg-easy web management pane
 - **Docker-Based**: Runs in containers for easy deployment and updates
 - **Cross-Platform Support**: Works on Ubuntu, Debian, CentOS, Fedora, and RHEL
 - **Automatic Firewall Configuration**: Configures UFW or firewalld automatically
+- **Smart Port Detection**: Automatically detects and resolves port conflicts
 - **QR Code Generation**: Generate QR codes for mobile clients
 - **Secure by Default**: Automatic password generation and secure configuration
 - **Zero-Config**: Detects server IP and configures everything automatically
@@ -28,7 +29,7 @@ A simple, automated installer for WireGuard VPN with wg-easy web management pane
 - A Linux server (Ubuntu, Debian, CentOS, Fedora, or RHEL)
 - Root or sudo access
 - Public IP address or domain name
-- Ports 51820 (UDP) and 51821 (TCP) accessible from the internet
+- Ports 51820 (UDP) and 51821 (TCP) accessible from the internet (or alternative ports if these are in use - the installer will automatically detect and resolve conflicts)
 
 ## Quick Start (Recommended)
 
@@ -49,11 +50,12 @@ The script will:
 1. Detect your operating system
 2. Install Docker and Docker Compose if not present
 3. Detect your server's public IP
-4. Generate a secure password for the web UI
-5. Configure system settings (IP forwarding, etc.)
-6. Configure firewall rules
-7. Start WireGuard with wg-easy panel
-8. Display access information
+4. Check for port conflicts and automatically find available ports
+5. Generate a secure password for the web UI
+6. Configure system settings (IP forwarding, etc.)
+7. Configure firewall rules
+8. Start WireGuard with wg-easy panel
+9. Display access information
 
 ### Access Your VPN Panel
 
@@ -332,6 +334,8 @@ Then restart:
 docker compose down
 docker compose up -d
 ```
+
+**Note**: Don't forget to update your firewall rules to allow the new ports.
 
 ## Backup and Restore
 
